@@ -1,5 +1,6 @@
 """Работа с базой данных SQLite."""
 import sqlite3
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -9,8 +10,12 @@ from config import MAX_WORDS_PER_USER
 class Database:
     """Класс для работы с базой данных слов."""
 
-    def __init__(self, db_path: str = "vocabulary.db"):
+    def __init__(self, db_path: str = None):
         """Инициализация подключения к БД."""
+        if db_path is None:
+            # Используем /app/data в Docker, текущую директорию локально
+            data_dir = "/app/data" if os.path.exists("/app/data") else "."
+            db_path = os.path.join(data_dir, "vocabulary.db")
         self.db_path = db_path
         self.connection = sqlite3.connect(db_path, check_same_thread=False)
         self.cursor = self.connection.cursor()

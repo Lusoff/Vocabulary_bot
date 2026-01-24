@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  vocabulary-bot:
+    build: .
+    container_name: vocabulary_bot
+    restart: unless-stopped
+    volumes:
+      # Монтируем директорию для сохранения базы данных
+      - ./data:/app/data
+    environment:
+      # Переменные окружения из .env файла
+      - BOT_TOKEN=${BOT_TOKEN}
+      - YANDEX_DICT_API_KEY=${YANDEX_DICT_API_KEY}
+    env_file:
+      - .env
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
