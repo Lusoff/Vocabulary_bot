@@ -104,26 +104,26 @@ async def save_word_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     text_lines = [header]
     for i, m in enumerate(meanings[:8]):
-        pos_emoji = _get_pos_emoji(m["pos"])
+        pos_name = m["pos"].upper()  # NOUN, VERB, ADJECTIVE и т.д.
         # Показываем определение на английском + перевод если есть
-        text_lines.append(f"\n{i+1}. {pos_emoji} *{m['pos']}*")
+        text_lines.append(f"\n{i+1}. [{pos_name}]")
         text_lines.append(f"   🇬🇧 {m['definition'][:100]}")
         if m.get("translation_ru"):
             text_lines.append(f"   🇷🇺 _{m['translation_ru'][:80]}_")
         if m.get("example"):
             text_lines.append(f"   💬 _{m['example'][:80]}_")
     
-    # Создаём кнопки для выбора — показываем английское определение (уникальное)
+    # Создаём кнопки для выбора — показываем часть речи и английское определение
     keyboard = []
     for i, m in enumerate(meanings[:8]):  # Максимум 8 кнопок
-        pos_emoji = _get_pos_emoji(m["pos"])
-        # В кнопке показываем английское определение (оно уникальное для каждого значения)
-        btn_text = m["definition"][:35]
-        if len(btn_text) >= 35:
+        pos_name = m["pos"].upper()[:4]  # NOUN, VERB, ADJ, ADV
+        # В кнопке показываем часть речи + английское определение
+        btn_text = m["definition"][:30]
+        if len(btn_text) >= 30:
             btn_text += "..."
         keyboard.append([
             InlineKeyboardButton(
-                f"{i+1}. {pos_emoji} {btn_text}", 
+                f"{i+1}. [{pos_name}] {btn_text}", 
                 callback_data=f"save_meaning:{i}"
             )
         ])
