@@ -25,8 +25,15 @@ from handlers.commands import (
     WAITING_WORD,
     MAIN_KEYBOARD
 )
-from handlers.training import start_training
+from handlers.training import (
+    start_training, 
+    check_training_answer, 
+    cancel_training,
+    handle_training_answer,
+    WAITING_ANSWER
+)
 from handlers.callbacks import button_callback
+from middleware.security import protected
 
 # Настройка логирования
 logging.basicConfig(
@@ -36,6 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@protected
 async def handle_text(update, context):
     """Обработка текстовых сообщений (кнопки главного меню)."""
     text = update.message.text
@@ -45,7 +53,7 @@ async def handle_text(update, context):
     elif text == "🔍 Найти слово":
         return await find_word(update, context)
     elif text == "🎯 Тренировка":
-        await start_training(update, context)
+        return await start_training(update, context)
     elif text == "📊 Статистика":
         await stats(update, context)
     elif text == "❓ Помощь":
@@ -77,19 +85,40 @@ def main():
             WAITING_WORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, lookup_word)],
         },
         fallbacks=[CommandHandler("cancel", cancel_search)],
+        name="search_conversation",
+        persistent=False,
+    )
+    
+    # Обработчик тренировки (ConversationHandler)
+    training_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler("train", start_training),
+            MessageHandler(filters.Regex("^🎯 Тренировка$"), start_training)
+        ],
+        states={
+            WAITING_ANSWER: [MessageHandler(filters.TEXT & ~filters.COMMAND, check_training_answer)],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_training),
+            MessageHandler(filters.Regex("^🛑 Завершить$"), cancel_training),
+        ],
+        name="training_conversation",
+        persistent=False,
     )
     
     # Регистрация обработчиков
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("words", my_words))
-    app.add_handler(CommandHandler("train", start_training))
     app.add_handler(CommandHandler("stats", stats))
     
     # Обработчик поиска слова
     app.add_handler(search_word_handler)
     
-    # Обработчик callback-кнопок
+    # Обработчик тренировки
+    app.add_handler(training_handler)
+    
+    # Обработчик callback-кнопок (включая старые кнопки тренировки)
     app.add_handler(CallbackQueryHandler(button_callback))
     
     # Обработчик текстовых сообщений (главное меню)

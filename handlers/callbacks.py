@@ -4,12 +4,14 @@ from telegram.ext import ContextTypes
 
 from database import Database
 from services import DictionaryService
+from middleware.security import protected
 from .training import handle_training_answer
 
 db = Database()
 dictionary = DictionaryService()
 
 
+@protected
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Главный обработчик всех callback-кнопок."""
     query = update.callback_query
@@ -45,6 +47,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # Пагинация "Мои слова"
+    if data.startswith("words_page:"):
+        await words_page_callback(update, context)
+        return
+    
     # Отмена
     if data == "cancel":
         await query.edit_message_text("❌ Отменено.")
@@ -70,12 +77,16 @@ async def save_word_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # Собираем все значения
     meanings = []
     for pos in parts:
+        # Получаем переводы для этой части речи
+        translations = pos.translations_ru if hasattr(pos, 'translations_ru') else []
+        translation_str = ", ".join(translations) if translations else ""
+        
         for defn in pos.definitions[:3]:  # Максимум 3 значения на часть речи
             meanings.append({
                 "pos": pos.part_of_speech,
                 "definition": defn.definition,
                 "example": defn.example,
-                "translation_ru": defn.translation_ru,
+                "translation_ru": translation_str,  # Общий перевод для части речи
             })
     
     if not meanings:
@@ -94,25 +105,20 @@ async def save_word_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     text_lines = [header]
     for i, m in enumerate(meanings[:8]):
         pos_emoji = _get_pos_emoji(m["pos"])
-        # Показываем русский перевод если есть
+        # Показываем определение на английском + перевод если есть
+        text_lines.append(f"\n{i+1}. {pos_emoji} *{m['pos']}*")
+        text_lines.append(f"   🇬🇧 {m['definition'][:100]}")
         if m.get("translation_ru"):
-            text_lines.append(f"\n{i+1}. {pos_emoji} *{m['pos']}*")
-            text_lines.append(f"   🇷🇺 *{m['translation_ru']}*")
-            text_lines.append(f"   🇬🇧 {m['definition'][:100]}")
-        else:
-            text_lines.append(f"\n{i+1}. {pos_emoji} *{m['pos']}*: {m['definition'][:100]}")
+            text_lines.append(f"   🇷🇺 _{m['translation_ru'][:80]}_")
         if m.get("example"):
             text_lines.append(f"   💬 _{m['example'][:80]}_")
     
-    # Создаём кнопки для выбора
+    # Создаём кнопки для выбора — показываем английское определение (уникальное)
     keyboard = []
     for i, m in enumerate(meanings[:8]):  # Максимум 8 кнопок
         pos_emoji = _get_pos_emoji(m["pos"])
-        # В кнопке показываем русский перевод если есть
-        if m.get("translation_ru"):
-            btn_text = m["translation_ru"][:35]
-        else:
-            btn_text = m["definition"][:35]
+        # В кнопке показываем английское определение (оно уникальное для каждого значения)
+        btn_text = m["definition"][:35]
         if len(btn_text) >= 35:
             btn_text += "..."
         keyboard.append([
@@ -150,33 +156,45 @@ async def save_meaning_callback(update: Update, context: ContextTypes.DEFAULT_TY
     choice = query.data.split(":")[1]
     
     saved_count = 0
+    limit_error = ""
     
     if choice == "all":
         # Сохраняем все значения
         for m in meanings:
-            # Русский перевод имеет приоритет
-            if m.get("translation_ru"):
-                translation = f"({m['pos']}) {m['translation_ru']}"
-            else:
-                translation = f"({m['pos']}) {m['definition']}"
+            # Русский перевод
+            translation = f"({m['pos']}) {m['translation_ru']}" if m.get("translation_ru") else f"({m['pos']})"
+            # Английское определение
+            definition = m.get("definition", "")
             example = m.get("example")
-            if db.add_word(user_id, word, translation, example, phonetic):
+            success, error = db.add_word(user_id, word, translation, definition, example, phonetic)
+            if success:
                 saved_count += 1
+            elif error:
+                limit_error = error
+                break
     else:
         # Сохраняем одно значение
         idx = int(choice)
         if idx < len(meanings):
             m = meanings[idx]
-            # Русский перевод имеет приоритет
-            if m.get("translation_ru"):
-                translation = f"({m['pos']}) {m['translation_ru']}"
-            else:
-                translation = f"({m['pos']}) {m['definition']}"
+            # Русский перевод
+            translation = f"({m['pos']}) {m['translation_ru']}" if m.get("translation_ru") else f"({m['pos']})"
+            # Английское определение
+            definition = m.get("definition", "")
             example = m.get("example")
-            if db.add_word(user_id, word, translation, example, phonetic):
+            success, error = db.add_word(user_id, word, translation, definition, example, phonetic)
+            if success:
                 saved_count += 1
+            elif error:
+                limit_error = error
     
-    if saved_count > 0:
+    if limit_error:
+        await query.edit_message_text(
+            f"⚠️ {limit_error}\n\n"
+            f"Сохранено: {saved_count} значений (до лимита).",
+            parse_mode="Markdown"
+        )
+    elif saved_count > 0:
         total = db.get_word_count(user_id)
         await query.edit_message_text(
             f"✅ Сохранено значений: {saved_count}\n\n"
@@ -226,3 +244,57 @@ def _get_pos_emoji(pos: str) -> str:
         "interjection": "❗",
     }
     return emojis.get(pos.lower(), "📌")
+
+
+async def words_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Пагинация списка слов."""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    page = int(query.data.split(":")[1])
+    words = db.get_user_words(user_id)
+    
+    # Пагинация: 5 слов на страницу
+    PAGE_SIZE = 5
+    total = len(words)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    
+    page_words = words[start:end]
+    
+    text = f"📚 *Твои слова* ({start + 1}-{end} из {total}):\n\n"
+    for i, row in enumerate(page_words, start + 1):
+        word_id, word, translation, definition, example, shown, correct, phonetic = row
+        accuracy = f" ({correct}/{shown})" if shown > 0 else ""
+        phonetic_str = f" `{phonetic}`" if phonetic else ""
+        
+        text += f"{i}. *{word}*{phonetic_str}{accuracy}\n"
+        
+        # Показываем русский перевод
+        if translation:
+            short_translation = translation[:80] + "..." if len(translation) > 80 else translation
+            text += f"    🇷🇺 _{short_translation}_\n"
+        
+        # Показываем английское определение
+        if definition:
+            short_definition = definition[:80] + "..." if len(definition) > 80 else definition
+            text += f"    🇬🇧 _{short_definition}_\n"
+        
+        text += "\n"
+    
+    # Кнопки пагинации
+    keyboard = []
+    nav_buttons = []
+    
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"words_page:{page - 1}"))
+    
+    if end < total:
+        nav_buttons.append(InlineKeyboardButton("Ещё ➡️", callback_data=f"words_page:{page + 1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=reply_markup)
