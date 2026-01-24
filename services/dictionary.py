@@ -299,7 +299,7 @@ class DictionaryService:
             print(f"Dictionary API error: {e}")
             return None
     
-    async def _get_google_translation(self, word: str, session: aiohttp.ClientSession) -> Optional[str]:
+    async def _get_google_translation(self, text: str, session: aiohttp.ClientSession) -> Optional[str]:
         """Получение перевода через Google Translate (fallback)."""
         try:
             url = "https://translate.googleapis.com/translate_a/single"
@@ -308,7 +308,7 @@ class DictionaryService:
                 "sl": "en",
                 "tl": "ru",
                 "dt": "t",
-                "q": word
+                "q": text
             }
             
             async with session.get(url, params=params) as response:
@@ -326,7 +326,7 @@ class DictionaryService:
         if not self.yandex_api_key:
             return {}
         
-        translations = {}  # {part_of_speech: [translations]}
+        translations = {}  # {part_of_speech: {"all_translations": [...], "details": [...]}}
         
         try:
             params = {
@@ -342,29 +342,43 @@ class DictionaryService:
                     for entry in data.get("def", []):
                         pos = entry.get("pos", "unknown")
                         
-                        # Собираем все переводы для этой части речи
-                        pos_translations = []
-                        for tr in entry.get("tr", []):
-                            translation = tr.get("text", "")
-                            if translation:
-                                # Получаем примеры
-                                examples = []
-                                for ex in tr.get("ex", []):
-                                    ex_text = ex.get("text", "")
-                                    ex_tr = ex.get("tr", [{}])[0].get("text", "") if ex.get("tr") else ""
-                                    if ex_text:
-                                        examples.append({"en": ex_text, "ru": ex_tr})
-                                
-                                pos_translations.append({
-                                    "translation": translation,
-                                    "examples": examples,
-                                    "synonyms": [s.get("text", "") for s in tr.get("syn", [])]
-                                })
+                        # Собираем ВСЕ переводы для этой части речи (основные + синонимы)
+                        all_translations = []  # Все уникальные переводы
+                        seen_translations = set()
+                        pos_details = []  # Детали для каждого перевода
                         
-                        if pos_translations:
-                            if pos not in translations:
-                                translations[pos] = []
-                            translations[pos].extend(pos_translations)
+                        for tr in entry.get("tr", []):
+                            # Основной перевод
+                            main_translation = tr.get("text", "")
+                            if main_translation and main_translation.lower() not in seen_translations:
+                                all_translations.append(main_translation)
+                                seen_translations.add(main_translation.lower())
+                            
+                            # Синонимы перевода
+                            for syn in tr.get("syn", []):
+                                syn_text = syn.get("text", "")
+                                if syn_text and syn_text.lower() not in seen_translations:
+                                    all_translations.append(syn_text)
+                                    seen_translations.add(syn_text.lower())
+                            
+                            # Получаем примеры
+                            examples = []
+                            for ex in tr.get("ex", []):
+                                ex_text = ex.get("text", "")
+                                ex_tr = ex.get("tr", [{}])[0].get("text", "") if ex.get("tr") else ""
+                                if ex_text:
+                                    examples.append({"en": ex_text, "ru": ex_tr})
+                            
+                            pos_details.append({
+                                "translation": main_translation,
+                                "examples": examples,
+                            })
+                        
+                        if all_translations:
+                            translations[pos] = {
+                                "all_translations": all_translations,
+                                "details": pos_details
+                            }
                             
         except Exception as e:
             print(f"Yandex Dictionary API error: {e}")
@@ -375,13 +389,14 @@ class DictionaryService:
         """Создание WordInfo только из данных Yandex (если Free Dictionary не нашёл слово)."""
         parts_of_speech = []
         
-        for pos, translations in yandex_translations.items():
-            # Собираем все переводы для части речи
-            translations_ru = [tr.get("translation") for tr in translations if tr.get("translation")]
+        for pos, pos_data in yandex_translations.items():
+            # Берём все переводы для части речи
+            translations_ru = pos_data.get("all_translations", [])
+            details = pos_data.get("details", [])
             
             # Создаём определения из примеров (если есть)
             definitions = []
-            for tr_data in translations[:3]:
+            for tr_data in details[:3]:
                 if tr_data.get("examples"):
                     example_en = tr_data["examples"][0].get("en")
                     definitions.append(Definition(
@@ -446,11 +461,10 @@ class DictionaryService:
                 if not raw_definitions:
                     continue
                 
-                # Получаем переводы для этой части речи из Yandex
-                yandex_pos_translations = yandex_translations.get(pos, [])
-                
-                # Собираем все переводы для части речи (через запятую)
-                translations_ru = [tr.get("translation") for tr in yandex_pos_translations if tr.get("translation")]
+                # Получаем переводы для этой части речи из Yandex (новый формат)
+                yandex_pos_data = yandex_translations.get(pos, {})
+                translations_ru = yandex_pos_data.get("all_translations", [])
+                yandex_details = yandex_pos_data.get("details", [])
                 
                 # Если нет переводов от Yandex, используем Google Translate (fallback)
                 if not translations_ru and google_translation:
@@ -462,9 +476,9 @@ class DictionaryService:
                     example = defn.get("example")
                     
                     # Если нет примера в Free Dictionary, пробуем взять из Yandex
-                    if not example and i < len(yandex_pos_translations):
-                        if yandex_pos_translations[i].get("examples"):
-                            example = yandex_pos_translations[i]["examples"][0].get("en")
+                    if not example and i < len(yandex_details):
+                        if yandex_details[i].get("examples"):
+                            example = yandex_details[i]["examples"][0].get("en")
                     
                     definitions.append(Definition(
                         definition=def_text,
@@ -497,14 +511,15 @@ class DictionaryService:
         
         # Добавляем части речи, которые есть в Yandex, но нет в Free Dictionary
         existing_pos = {p.part_of_speech for p in parts_of_speech}
-        for pos, translations in yandex_translations.items():
+        for pos, pos_data in yandex_translations.items():
             if pos not in existing_pos:
-                # Собираем переводы
-                translations_ru = [tr.get("translation") for tr in translations if tr.get("translation")]
+                # Берём переводы из нового формата
+                translations_ru = pos_data.get("all_translations", [])
+                details = pos_data.get("details", [])
                 
                 # Создаём определения из примеров Yandex (если есть)
                 definitions = []
-                for tr_data in translations[:3]:
+                for tr_data in details[:3]:
                     if tr_data.get("examples"):
                         example_en = tr_data["examples"][0].get("en")
                         definitions.append(Definition(
