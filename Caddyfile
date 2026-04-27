@@ -1,0 +1,23 @@
+bots4max.duckdns.org {
+    @webhook path /telegram/webhook
+    reverse_proxy @webhook 127.0.0.1:8000
+
+    @health path /health
+    reverse_proxy @health 127.0.0.1:8000
+
+    log {
+        output file /var/log/caddy/Vocabulary_Bot.log {
+            roll_size 10MB
+            roll_keep 5
+        }
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000;"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        X-XSS-Protection "1; mode=block"
+    }
+
+    respond "Not found" 404
+}

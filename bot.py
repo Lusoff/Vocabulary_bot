@@ -124,9 +124,14 @@ def main():
     # Обработчик текстовых сообщений (главное меню)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    # Запуск бота
-    logger.info("Бот запущен!")
-    app.run_polling(drop_pending_updates=True)
+    # Запуск бота через webhook
+    logger.info("Бот запущен через webhook!")
+    app.run_webhook(
+        listen="127.0.0.1",
+        port=8000,
+        webhook_url="https://bots4max.duckdns.org/telegram/webhook",
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
