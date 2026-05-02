@@ -130,6 +130,7 @@ def main():
     app.run_webhook(
         listen="0.0.0.0",
         port=8000,
+        url_path="telegram/webhook",
         webhook_url="https://bots4max.duckdns.org/telegram/webhook",
         drop_pending_updates=True
     )
